@@ -20,3 +20,13 @@ Useful options:
 - `python scripts/download_data.py --verbose` — progress per recording
 - `python scripts/download_data.py --max-per-species 100` — change the per-species limit
 - `python scripts/download_data.py --species "Parus major" "Turdus merula"` — subset only
+
+## Preprocessing data
+
+Audio files need to be converted to mel-spectrograms (stored as `.npy` matrices) before they can be fed into the CNN.
+
+To preprocess the downloaded recordings, run:
+```bash
+python scripts/preprocess_data.py
+```
+This script will read all `.mp3` and `.wav` files from the `data/` directory, pad/trim them to exactly 30 seconds, and save the resulting mel-spectrograms to the `processed_data/` directory. Note that both `data/` and `processed_data/` are excluded from version control.
