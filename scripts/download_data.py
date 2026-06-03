@@ -14,7 +14,7 @@ import requests
 API_ENDPOINT = "https://xeno-canto.org/api/3/recordings"
 DEFAULT_SPECIES_FILE = Path(__file__).resolve().parent.parent / "bird_species.txt"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data"
-DEFAULT_MAX_PER_SPECIES = 50
+DEFAULT_MAX_PER_SPECIES = 200
 DOWNLOADED_IDS_FILE = "downloaded_ids.json"
 API_TIMEOUT = (15, 120)  # (connect, read) seconds
 DOWNLOAD_TIMEOUT = (15, 180)
