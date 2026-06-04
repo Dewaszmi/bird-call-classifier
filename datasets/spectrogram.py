@@ -37,14 +37,15 @@ def discover_samples(root: Path) -> tuple[list[Sample], list[str]]:
     return samples, classes
 
 
-def train_val_split(
+def train_val_test_split(
     samples: list[Sample],
     val_ratio: float = 0.15,
+    test_ratio: float = 0.15,
     seed: int = 42,
-) -> tuple[list[Sample], list[Sample]]:
+) -> tuple[list[Sample], list[Sample], list[Sample]]:
     """Stratified split by class; splits whole recordings, not random crops."""
-    if not 0.0 < val_ratio < 1.0:
-        raise ValueError("val_ratio must be between 0 and 1")
+    if not 0.0 < val_ratio + test_ratio < 1.0:
+        raise ValueError("val_ratio + test_ratio must be between 0 and 1")
 
     by_class: dict[int, list[Sample]] = defaultdict(list)
     for sample in samples:
@@ -53,6 +54,7 @@ def train_val_split(
     rng = random.Random(seed)
     train_samples: list[Sample] = []
     val_samples: list[Sample] = []
+    test_samples: list[Sample] = []
 
     for class_samples in by_class.values():
         shuffled = class_samples.copy()
@@ -62,12 +64,21 @@ def train_val_split(
             continue
 
         n_val = max(1, int(len(shuffled) * val_ratio))
+        n_test = max(1, int(len(shuffled) * test_ratio))
+        
+        # Ensure we don't take all samples for val/test
+        if n_val + n_test >= len(shuffled):
+            n_val = max(1, len(shuffled) // 3)
+            n_test = max(1, len(shuffled) // 3)
+
         val_samples.extend(shuffled[:n_val])
-        train_samples.extend(shuffled[n_val:])
+        test_samples.extend(shuffled[n_val : n_val + n_test])
+        train_samples.extend(shuffled[n_val + n_test :])
 
     rng.shuffle(train_samples)
     rng.shuffle(val_samples)
-    return train_samples, val_samples
+    rng.shuffle(test_samples)
+    return train_samples, val_samples, test_samples
 
 
 class SpectrogramDataset(Dataset):
@@ -89,8 +100,14 @@ class SpectrogramDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-        path, label = self.samples[idx]
-        spec = np.load(path).astype(np.float32)
+        while True:
+            try:
+                path, label = self.samples[idx]
+                spec = np.load(path).astype(np.float32)
+                break
+            except Exception as e:
+                print(f"Warning: Failed to load {path} ({e}), picking another random sample.")
+                idx = random.randint(0, len(self.samples) - 1)
 
         if spec.ndim != 2:
             raise ValueError(f"Expected 2D spectrogram in {path}, got shape {spec.shape}")

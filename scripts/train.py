@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from datasets.spectrogram import SpectrogramDataset, discover_samples, train_val_split
+from datasets.spectrogram import SpectrogramDataset, discover_samples, train_val_test_split
 from models.vgg import BirdVGG
 
 DEFAULT_DATA_DIR = ROOT / "processed_data"
@@ -40,11 +40,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--val-ratio", type=float, default=0.15)
+    parser.add_argument("--test-ratio", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--device",
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Training device (default: cuda if available, else cpu)",
+        default="mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"),
+        help="Training device",
     )
     return parser.parse_args()
 
@@ -151,12 +152,13 @@ def main() -> int:
     device = torch.device(args.device)
 
     samples, classes = discover_samples(args.data_dir)
-    train_samples, val_samples = train_val_split(
-        samples, val_ratio=args.val_ratio, seed=args.seed
+    train_samples, val_samples, test_samples = train_val_test_split(
+        samples, val_ratio=args.val_ratio, test_ratio=args.test_ratio, seed=args.seed
     )
 
     train_dataset = SpectrogramDataset(train_samples, classes)
     val_dataset = SpectrogramDataset(val_samples, classes)
+    test_dataset = SpectrogramDataset(test_samples, classes)
 
     train_loader = DataLoader(
         train_dataset,
@@ -166,6 +168,12 @@ def main() -> int:
     )
     val_loader = DataLoader(
         val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=0,
+    )
+    test_loader = DataLoader(
+        test_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=0,
@@ -184,7 +192,7 @@ def main() -> int:
     history: list[dict[str, float]] = []
 
     print(f"Device: {device}")
-    print(f"Classes: {len(classes)} | Train: {len(train_dataset)} | Val: {len(val_dataset)}")
+    print(f"Classes: {len(classes)} | Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
 
     for epoch in range(1, args.epochs + 1):
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
@@ -221,8 +229,19 @@ def main() -> int:
     with (args.output_dir / "history.json").open("w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
 
-    print(f"\nBest val macro F1: {best_val_f1:.4f}")
+    print(f"\nTraining complete. Best val macro F1: {best_val_f1:.4f}")
     print(f"Checkpoint saved to {args.output_dir / 'best.pt'}")
+    
+    # Evaluate on test set
+    print("\nEvaluating best model on test set...")
+    model.load_state_dict(torch.load(args.output_dir / "best.pt", weights_only=True)["model_state_dict"])
+    test_metrics = evaluate(model, test_loader, criterion, device, len(classes))
+    print(
+        f"Test Loss: {test_metrics['loss']:.4f} | "
+        f"Test Accuracy: {test_metrics['accuracy']:.4f} | "
+        f"Test Macro F1: {test_metrics['macro_f1']:.4f}"
+    )
+
     return 0
 
 
