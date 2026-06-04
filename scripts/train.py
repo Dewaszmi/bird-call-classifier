@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -19,6 +21,7 @@ from models.vgg import BirdVGG
 
 DEFAULT_DATA_DIR = ROOT / "processed_data"
 DEFAULT_OUTPUT_DIR = ROOT / "checkpoints"
+DEFAULT_LOG_DIR = ROOT / "runs"
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +49,22 @@ def parse_args() -> argparse.Namespace:
         "--device",
         default="mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"),
         help="Training device",
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=DEFAULT_LOG_DIR,
+        help=f"TensorBoard log directory (default: {DEFAULT_LOG_DIR})",
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="TensorBoard run name (default: timestamp)",
+    )
+    parser.add_argument(
+        "--no-tensorboard",
+        action="store_true",
+        help="Disable TensorBoard logging",
     )
     return parser.parse_args()
 
@@ -191,8 +210,24 @@ def main() -> int:
     best_val_f1 = -1.0
     history: list[dict[str, float]] = []
 
+    writer: SummaryWriter | None = None
+    log_path: Path | None = None
+    if not args.no_tensorboard:
+        run_name = args.run_name or datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_path = args.log_dir / run_name
+        log_path.mkdir(parents=True, exist_ok=True)
+        writer = SummaryWriter(log_dir=log_path)
+        writer.add_text("classes", json.dumps(classes, indent=2))
+
     print(f"Device: {device}")
     print(f"Classes: {len(classes)} | Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
+    if writer is not None and log_path is not None:
+        print(f"TensorBoard logs: {log_path}")
+
+    sample_inputs, _ = next(iter(train_loader))
+    if writer is not None:
+        writer.add_graph(model, sample_inputs.to(device))
+        writer.add_image("sample/spectrogram", sample_inputs[0], global_step=0)
 
     for epoch in range(1, args.epochs + 1):
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
@@ -214,6 +249,12 @@ def main() -> int:
             f"val_acc={val_metrics['accuracy']:.4f} | "
             f"val_macro_f1={val_metrics['macro_f1']:.4f}"
         )
+
+        if writer is not None:
+            writer.add_scalar("loss/train", train_loss, epoch)
+            writer.add_scalar("loss/val", val_metrics["loss"], epoch)
+            writer.add_scalar("accuracy/val", val_metrics["accuracy"], epoch)
+            writer.add_scalar("macro_f1/val", val_metrics["macro_f1"], epoch)
 
         if val_metrics["macro_f1"] > best_val_f1:
             best_val_f1 = val_metrics["macro_f1"]
@@ -241,6 +282,30 @@ def main() -> int:
         f"Test Accuracy: {test_metrics['accuracy']:.4f} | "
         f"Test Macro F1: {test_metrics['macro_f1']:.4f}"
     )
+
+    if writer is not None:
+        writer.add_scalar("loss/test", test_metrics["loss"], args.epochs + 1)
+        writer.add_scalar("accuracy/test", test_metrics["accuracy"], args.epochs + 1)
+        writer.add_scalar("macro_f1/test", test_metrics["macro_f1"], args.epochs + 1)
+        writer.add_hparams(
+            {
+                "lr": args.lr,
+                "batch_size": args.batch_size,
+                "epochs": args.epochs,
+                "weight_decay": args.weight_decay,
+                "val_ratio": args.val_ratio,
+                "test_ratio": args.test_ratio,
+                "seed": args.seed,
+                "num_classes": len(classes),
+            },
+            {
+                "hparam/best_val_macro_f1": best_val_f1,
+                "hparam/test_loss": test_metrics["loss"],
+                "hparam/test_accuracy": test_metrics["accuracy"],
+                "hparam/test_macro_f1": test_metrics["macro_f1"],
+            },
+        )
+        writer.close()
 
     return 0
 

@@ -220,3 +220,6 @@ __marimo__/
 # Downloaded audio dataset
 data/
 processed_data/
+
+# TensorBoard logs
+runs/
