@@ -15,6 +15,7 @@ API_ENDPOINT = "https://xeno-canto.org/api/3/recordings"
 DEFAULT_SPECIES_FILE = Path(__file__).resolve().parent.parent / "bird_species.txt"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data"
 DEFAULT_MAX_PER_SPECIES = 200
+MAX_RECORDING_LENGTH_SEC = 30
 DOWNLOADED_IDS_FILE = "downloaded_ids.json"
 API_TIMEOUT = (15, 120)  # (connect, read) seconds
 DOWNLOAD_TIMEOUT = (15, 180)
@@ -49,9 +50,35 @@ def species_folder_name(genus: str, epithet: str) -> str:
     return f"{genus}_{epithet}"
 
 
+def parse_recording_length_seconds(recording: dict) -> float | None:
+    """Parse xeno-canto 'length' field (e.g. '0:23', '1:05') into seconds."""
+    raw = recording.get("length")
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    raw = str(raw).strip()
+    if not raw:
+        return None
+    parts = raw.split(":")
+    try:
+        if len(parts) == 1:
+            return float(parts[0])
+        if len(parts) == 2:
+            minutes, seconds = parts
+            return int(minutes) * 60 + float(seconds)
+        if len(parts) == 3:
+            hours, minutes, seconds = parts
+            return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except ValueError:
+        return None
+    return None
+
+
 def build_query(genus: str, epithet: str) -> str:
     """Build an xeno-canto API v3 query for one species."""
-    return f'grp:birds gen:{genus} sp:"{epithet}"'
+    max_len = MAX_RECORDING_LENGTH_SEC
+    return f'grp:birds gen:{genus} sp:"{epithet}" len:0-{max_len}'
 
 
 def sanitize_filename(name: str) -> str:
@@ -257,6 +284,16 @@ def download_species(
             stats["skipped"] += 1
             if verbose:
                 print(f"  [{i}/{len(recordings)}] Skip ID {rec_id} (already downloaded)")
+            continue
+
+        length_sec = parse_recording_length_seconds(recording)
+        if length_sec is not None and length_sec > MAX_RECORDING_LENGTH_SEC:
+            stats["skipped"] += 1
+            if verbose:
+                print(
+                    f"  [{i}/{len(recordings)}] Skip ID {rec_id} "
+                    f"(length {length_sec:.1f}s > {MAX_RECORDING_LENGTH_SEC}s)"
+                )
             continue
 
         if verbose:
