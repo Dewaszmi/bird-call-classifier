@@ -22,7 +22,11 @@ from datasets.batching import (
     uses_lengths,
     uses_masked_pooling,
 )
-from datasets.spectrogram import SpectrogramDataset, discover_samples, train_val_test_split
+from datasets.spectrogram import (
+    SpectrogramDataset,
+    discover_samples,
+    train_val_test_split,
+)
 from models.vgg import BirdVGG
 
 DATA_DIR = ROOT / "processed_data"
@@ -65,7 +69,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--device",
-        default="mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"),
+        default=(
+            "mps"
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        ),
         help="Training device",
     )
     parser.add_argument(
@@ -195,7 +203,9 @@ def train_one_epoch(
     total_samples = 0
 
     optimizer.zero_grad()
-    for step, (inputs, targets, lengths) in enumerate(iter_batches(loader, batching_strategy), start=1):
+    for step, (inputs, targets, lengths) in enumerate(
+        iter_batches(loader, batching_strategy), start=1
+    ):
         inputs = inputs.to(device)
         targets = targets.to(device)
         if lengths is not None:
@@ -293,7 +303,9 @@ def main() -> int:
 
     print(f"Device: {device}")
     print(f"Batching strategy: {args.batching_strategy} | Pooling: {pooling_mode}")
-    print(f"Classes: {len(classes)} | Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
+    print(
+        f"Classes: {len(classes)} | Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}"
+    )
     if writer is not None and log_path is not None:
         print(f"TensorBoard logs: {log_path}")
 
@@ -332,7 +344,6 @@ def main() -> int:
             f"Epoch {epoch:02d}/{args.epochs} | "
             f"train_loss={train_loss:.4f} | "
             f"val_loss={val_metrics['loss']:.4f} | "
-            f"val_acc={val_metrics['accuracy']:.4f} | "
             f"val_macro_f1={val_metrics['macro_f1']:.4f}"
         )
 
@@ -367,7 +378,9 @@ def main() -> int:
     print(f"Checkpoint saved to {OUTPUT_DIR / 'best.pt'}")
 
     print("\nEvaluating best model on test set...")
-    model.load_state_dict(torch.load(OUTPUT_DIR / "best.pt", weights_only=True)["model_state_dict"])
+    model.load_state_dict(
+        torch.load(OUTPUT_DIR / "best.pt", weights_only=True)["model_state_dict"]
+    )
     test_metrics = evaluate(
         model,
         test_loader,
