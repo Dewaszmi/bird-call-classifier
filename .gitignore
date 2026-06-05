@@ -221,5 +221,8 @@ __marimo__/
 data/
 processed_data/
 
+# Kaggle dataset packaging output
+kaggle_upload/
+
 # TensorBoard logs
 runs/
