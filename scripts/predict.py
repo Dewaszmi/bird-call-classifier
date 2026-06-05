@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
+from typing import TypedDict
 
 import librosa
 import numpy as np
@@ -18,6 +20,17 @@ from datasets.spectrogram import DEFAULT_IMAGE_SIZE, preprocess_spectrogram
 from models.vgg import BirdVGG
 
 DEFAULT_CHECKPOINT = ROOT / "checkpoints" / "best.pt"
+
+
+class PredictionEntry(TypedDict):
+    species: str
+    probability: float
+
+
+class PredictionResult(TypedDict):
+    predictions: list[PredictionEntry]
+    other: float
+    best_match: str
 
 
 def pad_audio(y: np.ndarray, target_length: int) -> np.ndarray:
@@ -47,6 +60,21 @@ def compute_mel_spectrogram(
     return librosa.power_to_db(mel_spectrogram, ref=np.max)
 
 
+def load_audio(
+    file_path: Path,
+    target_sr: int,
+    target_duration: float,
+) -> tuple[np.ndarray, int]:
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="PySoundFile failed")
+        warnings.filterwarnings(
+            "ignore",
+            category=FutureWarning,
+            module=r"librosa\.core\.audio",
+        )
+        return librosa.load(file_path, sr=target_sr, duration=target_duration)
+
+
 def preprocess_audio(
     file_path: Path,
     target_sr: int = 22050,
@@ -55,7 +83,7 @@ def preprocess_audio(
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     target_samples = int(target_sr * target_duration)
 
-    y, sr = librosa.load(file_path, sr=target_sr, duration=target_duration)
+    y, sr = load_audio(file_path, target_sr, target_duration)
     y = pad_audio(y, target_samples)
 
     spec = compute_mel_spectrogram(y, sr)
@@ -68,9 +96,98 @@ def preprocess_audio(
     return spec_tensor.unsqueeze(0), lengths
 
 
+def default_device() -> str:
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
+def format_predictions(
+    probabilities: torch.Tensor,
+    classes: list[str],
+    top_k: int = 3,
+) -> PredictionResult:
+    top_prob, top_indices = torch.topk(probabilities, k=min(top_k, len(classes)))
+    top_index_set = set(top_indices.tolist())
+
+    predictions: list[PredictionEntry] = []
+    for index in top_indices:
+        predictions.append(
+            {
+                "species": classes[index.item()],
+                "probability": probabilities[index.item()].item(),
+            }
+        )
+
+    other_prob = sum(
+        probabilities[i].item()
+        for i in range(len(classes))
+        if i not in top_index_set
+    )
+
+    return {
+        "predictions": predictions,
+        "other": other_prob,
+        "best_match": classes[top_indices[0].item()],
+    }
+
+
+def predict_audio(
+    audio_file: Path,
+    checkpoint: Path = DEFAULT_CHECKPOINT,
+    device: str | None = None,
+) -> PredictionResult:
+    if device is None:
+        device = default_device()
+
+    torch_device = torch.device(device)
+    checkpoint_data = torch.load(checkpoint, map_location=torch_device, weights_only=True)
+    classes = checkpoint_data["classes"]
+    pooling_mode = checkpoint_data.get("pooling_mode", "gap")
+    batching_strategy = checkpoint_data.get("batching_strategy", "none")
+
+    model = BirdVGG(num_classes=len(classes), pooling_mode=pooling_mode).to(torch_device)
+    model.load_state_dict(checkpoint_data["model_state_dict"])
+    model.eval()
+
+    resize_to = DEFAULT_IMAGE_SIZE if batching_strategy == "none" else None
+    input_tensor, lengths = preprocess_audio(audio_file, resize_to=resize_to)
+    input_tensor = input_tensor.to(torch_device)
+    if lengths is not None:
+        lengths = lengths.to(torch_device)
+
+    with torch.no_grad():
+        if pooling_mode == "masked-gap":
+            if lengths is None:
+                lengths = torch.tensor([input_tensor.size(3)], device=torch_device)
+            logits = model(input_tensor, lengths)
+        else:
+            logits = model(input_tensor)
+        probabilities = F.softmax(logits, dim=1).squeeze(0)
+
+    return format_predictions(probabilities, classes)
+
+
+def print_predictions(result: PredictionResult) -> None:
+    print("\n--- Predictions ---")
+    for index, entry in enumerate(result["predictions"], start=1):
+        print(f"{index}. {entry['species']}: {entry['probability'] * 100:.2f}%")
+    print(f"Other: {result['other'] * 100:.2f}%")
+
+    print("\n===========================================")
+    print(f"Best Match: {result['best_match']}")
+    print("===========================================\n")
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Predict bird species from an audio file.")
-    parser.add_argument("audio_file", type=Path, help="Path to the audio file (.wav, .mp3, etc.)")
+    parser = argparse.ArgumentParser(
+        description="Predict bird species from an audio file."
+    )
+    parser.add_argument(
+        "audio_file", type=Path, help="Path to the audio file (.wav, .mp3, etc.)"
+    )
     parser.add_argument(
         "--checkpoint",
         type=Path,
@@ -79,7 +196,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--device",
-        default="mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"),
+        default=default_device(),
         help="Inference device",
     )
 
@@ -90,55 +207,23 @@ def main() -> int:
         return 1
 
     if not args.checkpoint.exists():
-        print(f"Error: Checkpoint not found: {args.checkpoint}. Please train the model first.")
+        print(
+            f"Error: Checkpoint not found: {args.checkpoint}. Please train the model first."
+        )
         return 1
 
-    device = torch.device(args.device)
-    print(f"Using device: {device}")
-
+    print(f"Using device: {args.device}")
     print(f"Loading checkpoint from {args.checkpoint}...")
-    checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=True)
-    classes = checkpoint["classes"]
-    pooling_mode = checkpoint.get("pooling_mode", "gap")
-    batching_strategy = checkpoint.get("batching_strategy", "none")
-
-    model = BirdVGG(num_classes=len(classes), pooling_mode=pooling_mode).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-
     print(f"Processing audio file: {args.audio_file}...")
+
     try:
-        resize_to = DEFAULT_IMAGE_SIZE if batching_strategy == "none" else None
-        input_tensor, lengths = preprocess_audio(args.audio_file, resize_to=resize_to)
-        input_tensor = input_tensor.to(device)
-        if lengths is not None:
-            lengths = lengths.to(device)
+        print("Running inference...")
+        result = predict_audio(args.audio_file, args.checkpoint, args.device)
     except Exception as e:
-        print(f"Error processing audio file: {e}")
+        print(f"Error during prediction: {e}")
         return 1
 
-    print("Running inference...")
-    with torch.no_grad():
-        if pooling_mode == "masked-gap":
-            if lengths is None:
-                lengths = torch.tensor([input_tensor.size(3)], device=device)
-            logits = model(input_tensor, lengths)
-        else:
-            logits = model(input_tensor)
-        probabilities = F.softmax(logits, dim=1).squeeze(0)
-
-    top_prob, top_indices = torch.topk(probabilities, k=min(3, len(classes)))
-
-    print("\n--- Predictions ---")
-    for i in range(len(top_indices)):
-        species = classes[top_indices[i].item()]
-        prob = top_prob[i].item() * 100
-        print(f"{i+1}. {species}: {prob:.2f}%")
-
-    print("\n===========================================")
-    print(f"Best Match: {classes[top_indices[0].item()]}")
-    print("===========================================\n")
-
+    print_predictions(result)
     return 0
 
 
