@@ -25,25 +25,13 @@ from datasets.batching import (
 from datasets.spectrogram import SpectrogramDataset, discover_samples, train_val_test_split
 from models.vgg import BirdVGG
 
-DEFAULT_DATA_DIR = ROOT / "processed_data"
-DEFAULT_OUTPUT_DIR = ROOT / "checkpoints"
-DEFAULT_LOG_DIR = ROOT / "runs"
+DATA_DIR = ROOT / "processed_data"
+OUTPUT_DIR = ROOT / "checkpoints"
+LOG_DIR = ROOT / "runs"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train BirdVGG on mel spectrograms.")
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=DEFAULT_DATA_DIR,
-        help=f"Directory with processed .npy files (default: {DEFAULT_DATA_DIR})",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help=f"Where to save checkpoints (default: {DEFAULT_OUTPUT_DIR})",
-    )
     parser.add_argument(
         "--batching-strategy",
         choices=BATCHING_STRATEGIES,
@@ -64,7 +52,13 @@ def parse_args() -> argparse.Namespace:
         default=32,
         help="Gradient accumulation steps for --batching-strategy no-batch (default: 32)",
     )
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-4, help="Initial learning rate")
+    parser.add_argument(
+        "--lr-end-factor",
+        type=float,
+        default=0.1,
+        help="Final LR as a fraction of the initial LR (linear decay, default: 0.1)",
+    )
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--val-ratio", type=float, default=0.15)
     parser.add_argument("--test-ratio", type=float, default=0.15)
@@ -73,12 +67,6 @@ def parse_args() -> argparse.Namespace:
         "--device",
         default="mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"),
         help="Training device",
-    )
-    parser.add_argument(
-        "--log-dir",
-        type=Path,
-        default=DEFAULT_LOG_DIR,
-        help=f"TensorBoard log directory (default: {DEFAULT_LOG_DIR})",
     )
     parser.add_argument(
         "--run-name",
@@ -239,7 +227,7 @@ def main() -> int:
             f"(effective batch size={args.accum_steps})."
         )
 
-    samples, classes = discover_samples(args.data_dir)
+    samples, classes = discover_samples(DATA_DIR)
     train_samples, val_samples, test_samples = train_val_test_split(
         samples, val_ratio=args.val_ratio, test_ratio=args.test_ratio, seed=args.seed
     )
@@ -280,10 +268,18 @@ def main() -> int:
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
+    scheduler: torch.optim.lr_scheduler.LinearLR | None = None
+    if args.epochs > 1:
+        scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1.0,
+            end_factor=args.lr_end_factor,
+            total_iters=args.epochs - 1,
+        )
 
     accum_steps = args.accum_steps if args.batching_strategy == "no-batch" else 1
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     best_val_f1 = -1.0
     history: list[dict[str, float]] = []
 
@@ -291,7 +287,7 @@ def main() -> int:
     log_path: Path | None = None
     if not args.no_tensorboard:
         run_name = args.run_name or datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_path = args.log_dir / run_name
+        log_path = LOG_DIR / run_name
         log_path.mkdir(parents=True, exist_ok=True)
         writer = SummaryWriter(log_dir=log_path)
 
@@ -348,6 +344,9 @@ def main() -> int:
             writer.add_scalar("macro_f1/val", val_metrics["macro_f1"], epoch)
             writer.add_scalar("lr", current_lr, epoch)
 
+        if scheduler is not None and epoch < args.epochs:
+            scheduler.step()
+
         if val_metrics["macro_f1"] > best_val_f1:
             best_val_f1 = val_metrics["macro_f1"]
             checkpoint = {
@@ -359,16 +358,16 @@ def main() -> int:
                 "batching_strategy": args.batching_strategy,
                 "pooling_mode": pooling_mode,
             }
-            torch.save(checkpoint, args.output_dir / "best.pt")
+            torch.save(checkpoint, OUTPUT_DIR / "best.pt")
 
-    with (args.output_dir / "history.json").open("w", encoding="utf-8") as f:
+    with (OUTPUT_DIR / "history.json").open("w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
 
     print(f"\nTraining complete. Best val macro F1: {best_val_f1:.4f}")
-    print(f"Checkpoint saved to {args.output_dir / 'best.pt'}")
+    print(f"Checkpoint saved to {OUTPUT_DIR / 'best.pt'}")
 
     print("\nEvaluating best model on test set...")
-    model.load_state_dict(torch.load(args.output_dir / "best.pt", weights_only=True)["model_state_dict"])
+    model.load_state_dict(torch.load(OUTPUT_DIR / "best.pt", weights_only=True)["model_state_dict"])
     test_metrics = evaluate(
         model,
         test_loader,
@@ -387,6 +386,7 @@ def main() -> int:
         writer.add_hparams(
             {
                 "lr": args.lr,
+                "lr_end_factor": args.lr_end_factor,
                 "batch_size": args.batch_size,
                 "batching_strategy": args.batching_strategy,
                 "accum_steps": accum_steps,
