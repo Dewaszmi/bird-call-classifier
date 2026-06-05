@@ -217,17 +217,11 @@ def main() -> int:
         log_path = args.log_dir / run_name
         log_path.mkdir(parents=True, exist_ok=True)
         writer = SummaryWriter(log_dir=log_path)
-        writer.add_text("classes", json.dumps(classes, indent=2))
 
     print(f"Device: {device}")
     print(f"Classes: {len(classes)} | Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
     if writer is not None and log_path is not None:
         print(f"TensorBoard logs: {log_path}")
-
-    sample_inputs, _ = next(iter(train_loader))
-    if writer is not None:
-        writer.add_graph(model, sample_inputs.to(device))
-        writer.add_image("sample/spectrogram", sample_inputs[0], global_step=0)
 
     for epoch in range(1, args.epochs + 1):
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
@@ -251,10 +245,12 @@ def main() -> int:
         )
 
         if writer is not None:
+            current_lr = optimizer.param_groups[0]["lr"]
             writer.add_scalar("loss/train", train_loss, epoch)
             writer.add_scalar("loss/val", val_metrics["loss"], epoch)
             writer.add_scalar("accuracy/val", val_metrics["accuracy"], epoch)
             writer.add_scalar("macro_f1/val", val_metrics["macro_f1"], epoch)
+            writer.add_scalar("lr", current_lr, epoch)
 
         if val_metrics["macro_f1"] > best_val_f1:
             best_val_f1 = val_metrics["macro_f1"]
@@ -284,9 +280,6 @@ def main() -> int:
     )
 
     if writer is not None:
-        writer.add_scalar("loss/test", test_metrics["loss"], args.epochs + 1)
-        writer.add_scalar("accuracy/test", test_metrics["accuracy"], args.epochs + 1)
-        writer.add_scalar("macro_f1/test", test_metrics["macro_f1"], args.epochs + 1)
         writer.add_hparams(
             {
                 "lr": args.lr,
@@ -300,9 +293,6 @@ def main() -> int:
             },
             {
                 "hparam/best_val_macro_f1": best_val_f1,
-                "hparam/test_loss": test_metrics["loss"],
-                "hparam/test_accuracy": test_metrics["accuracy"],
-                "hparam/test_macro_f1": test_metrics["macro_f1"],
             },
         )
         writer.close()
