@@ -11,6 +11,73 @@ from torch.utils.data import Dataset
 
 Sample = tuple[Path, int]
 
+SAMPLE_RATE = 22050
+HOP_LENGTH = 512
+N_MELS = 128
+DEFAULT_IMAGE_SIZE = (128, 128)
+
+
+def preprocess_spectrogram(
+    spec: np.ndarray | torch.Tensor,
+    *,
+    resize_to: tuple[int, int] | None = DEFAULT_IMAGE_SIZE,
+    normalize: bool = True,
+) -> torch.Tensor:
+    """Convert a log-mel spectrogram to model input."""
+    if isinstance(spec, np.ndarray):
+        spec = torch.from_numpy(spec).float()
+    else:
+        spec = spec.float()
+
+    if spec.ndim != 2:
+        raise ValueError(f"Expected 2D spectrogram (freq, time), got shape {tuple(spec.shape)}")
+
+    spec = spec.unsqueeze(0)  # (1, freq, time)
+
+    if resize_to is not None:
+        spec = F.interpolate(
+            spec.unsqueeze(0),
+            size=resize_to,
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+
+    if normalize:
+        spec = (spec - spec.mean()) / (spec.std() + 1e-6)
+
+    return spec
+
+
+def collate_fixed(batch: list[tuple[torch.Tensor, int]]) -> tuple[torch.Tensor, torch.Tensor]:
+    specs, labels = zip(*batch)
+    return torch.stack(specs), torch.tensor(labels, dtype=torch.long)
+
+
+def collate_padded(
+    batch: list[tuple[torch.Tensor, int]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Right-pad spectrograms to the longest width in the batch."""
+    specs, labels = zip(*batch)
+    lengths = torch.tensor([spec.size(2) for spec in specs], dtype=torch.long)
+    max_time = int(lengths.max())
+
+    padded = [F.pad(spec, (0, max_time - spec.size(2))) for spec in specs]
+    return torch.stack(padded), torch.tensor(labels, dtype=torch.long), lengths
+
+
+def collate_no_pad(
+    batch: list[tuple[torch.Tensor, int]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if len(batch) != 1:
+        raise ValueError(f"collate_no_pad expects batch size 1, got {len(batch)}")
+
+    spec, label = batch[0]
+    return (
+        spec.unsqueeze(0),
+        torch.tensor([label], dtype=torch.long),
+        torch.tensor([spec.size(2)], dtype=torch.long),
+    )
+
 
 def discover_samples(root: Path) -> tuple[list[Sample], list[str]]:
     """Find all .npy spectrograms under root/<species>/ directories."""
@@ -65,8 +132,7 @@ def train_val_test_split(
 
         n_val = max(1, int(len(shuffled) * val_ratio))
         n_test = max(1, int(len(shuffled) * test_ratio))
-        
-        # Ensure we don't take all samples for val/test
+
         if n_val + n_test >= len(shuffled):
             n_val = max(1, len(shuffled) // 3)
             n_test = max(1, len(shuffled) // 3)
@@ -88,13 +154,21 @@ class SpectrogramDataset(Dataset):
         self,
         samples: list[Sample],
         classes: list[str],
-        image_size: tuple[int, int] = (128, 128),
+        resize_to: tuple[int, int] | None = DEFAULT_IMAGE_SIZE,
         normalize: bool = True,
     ):
         self.samples = samples
         self.classes = classes
-        self.image_size = image_size
+        self.resize_to = resize_to
         self.normalize = normalize
+        self._time_frames: list[int] | None = None
+
+    def get_time_frames(self) -> list[int]:
+        if self._time_frames is None:
+            self._time_frames = [
+                int(np.load(path, mmap_mode="r").shape[1]) for path, _ in self.samples
+            ]
+        return self._time_frames
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -112,16 +186,9 @@ class SpectrogramDataset(Dataset):
         if spec.ndim != 2:
             raise ValueError(f"Expected 2D spectrogram in {path}, got shape {spec.shape}")
 
-        # (freq, time) -> (1, freq, time)
-        spec = torch.from_numpy(spec).unsqueeze(0)
-        spec = F.interpolate(
-            spec.unsqueeze(0),
-            size=self.image_size,
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
-
-        if self.normalize:
-            spec = (spec - spec.mean()) / (spec.std() + 1e-6)
-
+        spec = preprocess_spectrogram(
+            spec,
+            resize_to=self.resize_to,
+            normalize=self.normalize,
+        )
         return spec, label
