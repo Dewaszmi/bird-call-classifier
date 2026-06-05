@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests
+from tqdm import tqdm
+
+from safe_filenames import sanitize_filename
 
 API_ENDPOINT = "https://xeno-canto.org/api/3/recordings"
-DEFAULT_SPECIES_FILE = Path(__file__).resolve().parent.parent / "bird_species.txt"
+DEFAULT_SPECIES_FILE = Path(__file__).resolve().parent.parent / "bird_species.tsv"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data"
 DEFAULT_MAX_PER_SPECIES = 200
-MAX_RECORDING_LENGTH_SEC = 30
+DEFAULT_MIN_RECORDING_LENGTH_SEC = 0
+DEFAULT_MAX_RECORDING_LENGTH_SEC = 30
 DOWNLOADED_IDS_FILE = "downloaded_ids.json"
 API_TIMEOUT = (15, 120)  # (connect, read) seconds
 DOWNLOAD_TIMEOUT = (15, 180)
@@ -23,26 +29,43 @@ MAX_RETRIES = 5
 RETRY_BACKOFF_SEC = 3
 
 
-def parse_species_line(line: str) -> tuple[str, str] | None:
+@dataclass(frozen=True)
+class Species:
+    genus: str
+    epithet: str
+
+    @property
+    def scientific_name(self) -> str:
+        return f"{self.genus} {self.epithet}"
+
+
+def parse_scientific_name(scientific_name: str) -> tuple[str, str] | None:
     """Parse 'Genus species' into (genus, epithet)."""
-    line = line.strip()
-    if not line or line.startswith("#"):
+    name = scientific_name.strip()
+    if not name:
         return None
-    parts = line.split()
+    parts = name.split()
     if len(parts) < 2:
-        print(f"Warning: skipping invalid species line: {line!r}", file=sys.stderr)
+        print(f"Warning: skipping invalid scientific name: {name!r}", file=sys.stderr)
         return None
-    genus, epithet = parts[0], parts[1]
-    return genus, epithet
+    return parts[0], parts[1]
 
 
-def load_species_list(path: Path) -> list[tuple[str, str]]:
-    species = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            parsed = parse_species_line(line)
-            if parsed:
-                species.append(parsed)
+def load_species_list(path: Path) -> list[Species]:
+    species: list[Species] = []
+    with path.open(encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        if not reader.fieldnames or "Scientific name" not in reader.fieldnames:
+            raise ValueError("Species file must contain a 'Scientific name' column")
+
+        for row in reader:
+            parsed = parse_scientific_name(row["Scientific name"])
+            if not parsed:
+                continue
+            genus, epithet = parsed
+            species.append(Species(genus=genus, epithet=epithet))
+
+    species.sort(key=lambda item: item.scientific_name.lower())
     return species
 
 
@@ -75,16 +98,29 @@ def parse_recording_length_seconds(recording: dict) -> float | None:
     return None
 
 
-def build_query(genus: str, epithet: str) -> str:
+def build_query(
+    genus: str,
+    epithet: str,
+    *,
+    min_length_sec: int,
+    max_length_sec: int,
+) -> str:
     """Build an xeno-canto API v3 query for one species."""
-    max_len = MAX_RECORDING_LENGTH_SEC
-    return f'grp:birds gen:{genus} sp:"{epithet}" len:0-{max_len}'
+    return (
+        f'grp:birds gen:{genus} sp:"{epithet}" '
+        f"len:{min_length_sec}-{max_length_sec}"
+    )
 
 
-def sanitize_filename(name: str) -> str:
-    for char in '<>:"/\\|?*':
-        name = name.replace(char, "_")
-    return name.strip(". ")
+def recording_length_in_range(
+    length_sec: float | None,
+    *,
+    min_length_sec: int,
+    max_length_sec: int,
+) -> bool:
+    if length_sec is None:
+        return True
+    return min_length_sec <= length_sec <= max_length_sec
 
 
 def request_with_retries(
@@ -118,7 +154,10 @@ def request_with_retries(
                 break
             wait = RETRY_BACKOFF_SEC * attempt
             if verbose:
-                print(f"    Request failed ({exc}), retrying in {wait}s...", file=sys.stderr)
+                print(
+                    f"    Request failed ({exc}), retrying in {wait}s...",
+                    file=sys.stderr,
+                )
             time.sleep(wait)
     raise last_error  # type: ignore[misc]
 
@@ -127,9 +166,11 @@ class XenoCantoClient:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "bird-call-classifier/1.0 (data download script)",
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": "bird-call-classifier/1.0 (data download script)",
+            }
+        )
 
     def search(
         self,
@@ -251,54 +292,98 @@ def download_recording(
     return dest_path
 
 
+def log_message(message: str, *, verbose: bool, progress: tqdm | None) -> None:
+    if not verbose:
+        return
+    if progress is not None:
+        progress.write(message)
+    else:
+        print(message)
+
+
 def download_species(
     client: XenoCantoClient,
     session: requests.Session,
-    genus: str,
-    epithet: str,
+    species: Species,
     output_dir: Path,
     *,
     max_recordings: int,
+    min_length_sec: int,
+    max_length_sec: int,
     skip_existing: bool,
     verbose: bool,
+    progress: tqdm | None = None,
 ) -> dict[str, int]:
-    query = build_query(genus, epithet)
-    folder = output_dir / species_folder_name(genus, epithet)
+    query = build_query(
+        species.genus,
+        species.epithet,
+        min_length_sec=min_length_sec,
+        max_length_sec=max_length_sec,
+    )
+    folder = output_dir / species_folder_name(species.genus, species.epithet)
     folder.mkdir(parents=True, exist_ok=True)
 
-    if verbose:
-        print(f"\n{genus} {epithet}")
-        print(f"  Query: {query}")
-        print(f"  Output: {folder}")
+    log_message(
+        f"\n{species.scientific_name}\n  Query: {query}\n  Output: {folder}",
+        verbose=verbose,
+        progress=progress,
+    )
 
     recordings = client.search(query, max_results=max_recordings, verbose=verbose)
-    if verbose:
-        print(f"  Found {len(recordings)} recording(s)")
+    log_message(
+        f"  Found {len(recordings)} recording(s)",
+        verbose=verbose,
+        progress=progress,
+    )
+
+    if progress is not None:
+        progress.total = (progress.total or 0) + len(recordings)
+        progress.refresh()
 
     downloaded_ids = load_downloaded_ids(output_dir) if skip_existing else set()
     stats = {"downloaded": 0, "skipped": 0, "failed": 0}
 
     for i, recording in enumerate(recordings, 1):
         rec_id = str(recording.get("id", ""))
+        if progress is not None:
+            progress.set_postfix_str(species.scientific_name, refresh=False)
+
         if skip_existing and rec_id in downloaded_ids:
             stats["skipped"] += 1
-            if verbose:
-                print(f"  [{i}/{len(recordings)}] Skip ID {rec_id} (already downloaded)")
+            log_message(
+                f"  [{i}/{len(recordings)}] Skip ID {rec_id} (already downloaded)",
+                verbose=verbose,
+                progress=progress,
+            )
+            if progress is not None:
+                progress.update(1)
             continue
 
         length_sec = parse_recording_length_seconds(recording)
-        if length_sec is not None and length_sec > MAX_RECORDING_LENGTH_SEC:
+        if not recording_length_in_range(
+            length_sec,
+            min_length_sec=min_length_sec,
+            max_length_sec=max_length_sec,
+        ):
             stats["skipped"] += 1
-            if verbose:
-                print(
-                    f"  [{i}/{len(recordings)}] Skip ID {rec_id} "
-                    f"(length {length_sec:.1f}s > {MAX_RECORDING_LENGTH_SEC}s)"
-                )
+            log_message(
+                f"  [{i}/{len(recordings)}] Skip ID {rec_id} "
+                f"(length {length_sec:.1f}s outside "
+                f"{min_length_sec}-{max_length_sec}s)",
+                verbose=verbose,
+                progress=progress,
+            )
+            if progress is not None:
+                progress.update(1)
             continue
 
         if verbose:
             en = recording.get("en", "")
-            print(f"  [{i}/{len(recordings)}] Downloading ID {rec_id} ({en})")
+            log_message(
+                f"  [{i}/{len(recordings)}] Downloading ID {rec_id} ({en})",
+                verbose=verbose,
+                progress=progress,
+            )
 
         try:
             download_recording(session, recording, folder, verbose=verbose)
@@ -307,7 +392,14 @@ def download_species(
             time.sleep(0.3)
         except Exception as exc:
             stats["failed"] += 1
-            print(f"  Failed ID {rec_id}: {exc}", file=sys.stderr)
+            message = f"  Failed ID {rec_id}: {exc}"
+            if progress is not None:
+                progress.write(message)
+            else:
+                print(message, file=sys.stderr)
+
+        if progress is not None:
+            progress.update(1)
 
     if skip_existing:
         save_downloaded_ids(output_dir, downloaded_ids)
@@ -344,6 +436,23 @@ def main() -> int:
         help=f"Maximum recordings per species (default: {DEFAULT_MAX_PER_SPECIES})",
     )
     parser.add_argument(
+        "--min-recording-length",
+        type=int,
+        default=DEFAULT_MIN_RECORDING_LENGTH_SEC,
+        metavar="SEC",
+        help=(
+            "Minimum recording length in seconds "
+            f"(default: {DEFAULT_MIN_RECORDING_LENGTH_SEC}, no lower limit)"
+        ),
+    )
+    parser.add_argument(
+        "--max-recording-length",
+        type=int,
+        default=DEFAULT_MAX_RECORDING_LENGTH_SEC,
+        metavar="SEC",
+        help=f"Maximum recording length in seconds (default: {DEFAULT_MAX_RECORDING_LENGTH_SEC})",
+    )
+    parser.add_argument(
         "--species",
         nargs="+",
         metavar="NAME",
@@ -355,9 +464,15 @@ def main() -> int:
         help="Re-download even if recording ID was downloaded before",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="Print progress details",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable the global progress bar",
     )
     args = parser.parse_args()
 
@@ -374,14 +489,26 @@ def main() -> int:
         print(f"Error: species file not found: {args.species_file}", file=sys.stderr)
         return 1
 
+    if args.min_recording_length < 0:
+        print("Error: --min-recording-length must be >= 0", file=sys.stderr)
+        return 1
+
+    if args.max_recording_length < args.min_recording_length:
+        print(
+            "Error: --max-recording-length must be >= --min-recording-length",
+            file=sys.stderr,
+        )
+        return 1
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.species:
         species_list = []
         for name in args.species:
-            parsed = parse_species_line(name)
+            parsed = parse_scientific_name(name)
             if parsed:
-                species_list.append(parsed)
+                genus, epithet = parsed
+                species_list.append(Species(genus=genus, epithet=epithet))
     else:
         species_list = load_species_list(args.species_file)
 
@@ -391,31 +518,52 @@ def main() -> int:
 
     client = XenoCantoClient(args.api_key)
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": "bird-call-classifier/1.0 (data download script)",
-    })
+    session.headers.update(
+        {
+            "User-Agent": "bird-call-classifier/1.0 (data download script)",
+        }
+    )
 
     totals = {"downloaded": 0, "skipped": 0, "failed": 0}
     print(f"Downloading {len(species_list)} species to {args.output_dir}")
 
-    for genus, epithet in species_list:
-        try:
-            stats = download_species(
-                client,
-                session,
-                genus,
-                epithet,
-                args.output_dir,
-                max_recordings=args.max_per_species,
-                skip_existing=not args.no_skip,
-                verbose=args.verbose,
-            )
-        except requests.exceptions.RequestException as exc:
-            print(f"Failed {genus} {epithet}: {exc}", file=sys.stderr)
-            totals["failed"] += 1
-            continue
-        for key in totals:
-            totals[key] += stats[key]
+    progress: tqdm | None = None
+    if not args.no_progress:
+        progress = tqdm(
+            total=0,
+            unit="recording",
+            dynamic_ncols=True,
+            desc="Downloading",
+        )
+
+    try:
+        for species in species_list:
+            try:
+                stats = download_species(
+                    client,
+                    session,
+                    species,
+                    args.output_dir,
+                    max_recordings=args.max_per_species,
+                    min_length_sec=args.min_recording_length,
+                    max_length_sec=args.max_recording_length,
+                    skip_existing=not args.no_skip,
+                    verbose=args.verbose,
+                    progress=progress,
+                )
+            except requests.exceptions.RequestException as exc:
+                message = f"Failed {species.scientific_name}: {exc}"
+                if progress is not None:
+                    progress.write(message)
+                else:
+                    print(message, file=sys.stderr)
+                totals["failed"] += 1
+                continue
+            for key in totals:
+                totals[key] += stats[key]
+    finally:
+        if progress is not None:
+            progress.close()
 
     print(
         f"\nDone. Downloaded: {totals['downloaded']}, "
