@@ -14,6 +14,10 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
 from safe_filenames import sanitize_filename
 
 API_ENDPOINT = "https://xeno-canto.org/api/3/recordings"
