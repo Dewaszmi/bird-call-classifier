@@ -14,8 +14,6 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
-from safe_filenames import sanitize_filename
-
 API_ENDPOINT = "https://xeno-canto.org/api/3/recordings"
 DEFAULT_SPECIES_FILE = Path(__file__).resolve().parent.parent / "bird_species.tsv"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data"

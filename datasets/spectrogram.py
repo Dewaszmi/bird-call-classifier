@@ -15,11 +15,41 @@ SAMPLE_RATE = 22050
 HOP_LENGTH = 512
 N_MELS = 128
 DEFAULT_IMAGE_SIZE = (128, 128)
+DEFAULT_FIXED_DURATION_SEC = 30.0
+DEFAULT_MAX_DURATION_SEC = 60.0
+
+
+def duration_to_frames(
+    duration_sec: float,
+    sr: int = SAMPLE_RATE,
+    hop_length: int = HOP_LENGTH,
+) -> int:
+    return max(1, int(duration_sec * sr / hop_length))
+
+
+def pad_spectrogram_time(
+    spec: torch.Tensor,
+    target_frames: int,
+    pad_value: float | None = None,
+) -> torch.Tensor:
+    """Right-pad a (1, freq, time) spectrogram; truncate if longer than target."""
+    time_frames = spec.size(2)
+    if time_frames > target_frames:
+        return spec[:, :, :target_frames]
+    if time_frames == target_frames:
+        return spec
+
+    if pad_value is None:
+        pad_value = float(spec.min())
+
+    padding = spec.new_full((spec.size(0), spec.size(1), target_frames - time_frames), pad_value)
+    return torch.cat([spec, padding], dim=2)
 
 
 def preprocess_spectrogram(
     spec: np.ndarray | torch.Tensor,
     *,
+    fixed_time_frames: int | None = None,
     resize_to: tuple[int, int] | None = DEFAULT_IMAGE_SIZE,
     normalize: bool = True,
 ) -> torch.Tensor:
@@ -33,6 +63,9 @@ def preprocess_spectrogram(
         raise ValueError(f"Expected 2D spectrogram (freq, time), got shape {tuple(spec.shape)}")
 
     spec = spec.unsqueeze(0)  # (1, freq, time)
+
+    if fixed_time_frames is not None:
+        spec = pad_spectrogram_time(spec, fixed_time_frames)
 
     if resize_to is not None:
         spec = F.interpolate(
@@ -51,6 +84,17 @@ def preprocess_spectrogram(
 def collate_fixed(batch: list[tuple[torch.Tensor, int]]) -> tuple[torch.Tensor, torch.Tensor]:
     specs, labels = zip(*batch)
     return torch.stack(specs), torch.tensor(labels, dtype=torch.long)
+
+
+def collate_fixed_with_lengths(
+    batch: list[tuple[torch.Tensor, int, int]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    specs, labels, lengths = zip(*batch)
+    return (
+        torch.stack(specs),
+        torch.tensor(labels, dtype=torch.long),
+        torch.tensor(lengths, dtype=torch.long),
+    )
 
 
 def collate_padded(
@@ -155,12 +199,16 @@ class SpectrogramDataset(Dataset):
         samples: list[Sample],
         classes: list[str],
         resize_to: tuple[int, int] | None = DEFAULT_IMAGE_SIZE,
+        fixed_time_frames: int | None = None,
         normalize: bool = True,
+        return_valid_lengths: bool = False,
     ):
         self.samples = samples
         self.classes = classes
         self.resize_to = resize_to
+        self.fixed_time_frames = fixed_time_frames
         self.normalize = normalize
+        self.return_valid_lengths = return_valid_lengths
         self._time_frames: list[int] | None = None
 
     def get_time_frames(self) -> list[int]:
@@ -186,9 +234,18 @@ class SpectrogramDataset(Dataset):
         if spec.ndim != 2:
             raise ValueError(f"Expected 2D spectrogram in {path}, got shape {spec.shape}")
 
+        time_frames = spec.shape[1]
+        if self.fixed_time_frames is not None:
+            valid_frames = min(time_frames, self.fixed_time_frames)
+        else:
+            valid_frames = time_frames
+
         spec = preprocess_spectrogram(
             spec,
+            fixed_time_frames=self.fixed_time_frames,
             resize_to=self.resize_to,
             normalize=self.normalize,
         )
+        if self.return_valid_lengths:
+            return spec, label, valid_frames
         return spec, label

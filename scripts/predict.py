@@ -16,7 +16,13 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from datasets.spectrogram import DEFAULT_IMAGE_SIZE, preprocess_spectrogram
+from datasets.spectrogram import (
+    DEFAULT_FIXED_DURATION_SEC,
+    DEFAULT_IMAGE_SIZE,
+    DEFAULT_MAX_DURATION_SEC,
+    duration_to_frames,
+    preprocess_spectrogram,
+)
 from models.vgg import BirdVGG
 
 DEFAULT_CHECKPOINT = ROOT / "checkpoints" / "best.pt"
@@ -60,11 +66,7 @@ def compute_mel_spectrogram(
     return librosa.power_to_db(mel_spectrogram, ref=np.max)
 
 
-def load_audio(
-    file_path: Path,
-    target_sr: int,
-    target_duration: float,
-) -> tuple[np.ndarray, int]:
+def load_audio(file_path: Path, target_sr: int) -> tuple[np.ndarray, int]:
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="PySoundFile failed")
         warnings.filterwarnings(
@@ -72,28 +74,60 @@ def load_audio(
             category=FutureWarning,
             module=r"librosa\.core\.audio",
         )
-        return librosa.load(file_path, sr=target_sr, duration=target_duration)
+        return librosa.load(file_path, sr=target_sr)
 
 
 def preprocess_audio(
     file_path: Path,
     target_sr: int = 22050,
-    target_duration: float = 30.0,
-    resize_to: tuple[int, int] | None = DEFAULT_IMAGE_SIZE,
+    *,
+    batching_strategy: str = "none",
+    fixed_duration: float = DEFAULT_FIXED_DURATION_SEC,
+    max_duration: float = DEFAULT_MAX_DURATION_SEC,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    target_samples = int(target_sr * target_duration)
+    if batching_strategy == "none":
+        target_samples = int(target_sr * fixed_duration)
+        y, sr = load_audio(file_path, target_sr)
+        y = pad_audio(y, target_samples)
+        spec = compute_mel_spectrogram(y, sr)
+        spec_tensor = preprocess_spectrogram(
+            spec,
+            fixed_time_frames=duration_to_frames(fixed_duration),
+            resize_to=DEFAULT_IMAGE_SIZE,
+            normalize=True,
+        )
+        return spec_tensor.unsqueeze(0), None
 
-    y, sr = load_audio(file_path, target_sr, target_duration)
-    y = pad_audio(y, target_samples)
+    if batching_strategy == "masked-gap":
+        max_samples = int(target_sr * max_duration)
+        y, sr = load_audio(file_path, target_sr)
+        if len(y) > max_samples:
+            y = y[:max_samples]
+
+        spec = compute_mel_spectrogram(y, sr)
+        fixed_frames = duration_to_frames(fixed_duration)
+        valid_frames = min(spec.shape[1], fixed_frames)
+        spec_tensor = preprocess_spectrogram(
+            spec,
+            fixed_time_frames=fixed_frames,
+            resize_to=None,
+            normalize=True,
+        )
+        return spec_tensor.unsqueeze(0), torch.tensor([valid_frames], dtype=torch.long)
+
+    max_samples = int(target_sr * max_duration)
+    y, sr = load_audio(file_path, target_sr)
+    if len(y) > max_samples:
+        y = y[:max_samples]
 
     spec = compute_mel_spectrogram(y, sr)
-    spec_tensor = preprocess_spectrogram(spec, resize_to=resize_to, normalize=True)
-
-    lengths = None
-    if resize_to is None:
-        lengths = torch.tensor([spec_tensor.size(2)])
-
-    return spec_tensor.unsqueeze(0), lengths
+    spec_tensor = preprocess_spectrogram(
+        spec,
+        fixed_time_frames=None,
+        resize_to=None,
+        normalize=True,
+    )
+    return spec_tensor.unsqueeze(0), torch.tensor([spec_tensor.size(2)])
 
 
 def default_device() -> str:
@@ -147,13 +181,17 @@ def predict_audio(
     classes = checkpoint_data["classes"]
     pooling_mode = checkpoint_data.get("pooling_mode", "gap")
     batching_strategy = checkpoint_data.get("batching_strategy", "none")
+    fixed_duration = checkpoint_data.get("fixed_duration", DEFAULT_FIXED_DURATION_SEC)
 
     model = BirdVGG(num_classes=len(classes), pooling_mode=pooling_mode).to(torch_device)
     model.load_state_dict(checkpoint_data["model_state_dict"])
     model.eval()
 
-    resize_to = DEFAULT_IMAGE_SIZE if batching_strategy == "none" else None
-    input_tensor, lengths = preprocess_audio(audio_file, resize_to=resize_to)
+    input_tensor, lengths = preprocess_audio(
+        audio_file,
+        batching_strategy=batching_strategy,
+        fixed_duration=fixed_duration,
+    )
     input_tensor = input_tensor.to(torch_device)
     if lengths is not None:
         lengths = lengths.to(torch_device)

@@ -44,7 +44,9 @@ def main() -> int:
         ]
         result = subprocess.run(cmd, cwd=ROOT)
         if result.returncode != 0:
-            print(f"Training failed for strategy '{strategy}' (exit {result.returncode})")
+            print(
+                f"Training failed for strategy '{strategy}' (exit {result.returncode})"
+            )
             return result.returncode
 
         archive_run(strategy)

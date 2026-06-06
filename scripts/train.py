@@ -23,8 +23,10 @@ from datasets.batching import (
     uses_masked_pooling,
 )
 from datasets.spectrogram import (
+    DEFAULT_FIXED_DURATION_SEC,
     SpectrogramDataset,
     discover_samples,
+    duration_to_frames,
     train_val_test_split,
 )
 from models.vgg import BirdVGG
@@ -45,10 +47,10 @@ def parse_args() -> argparse.Namespace:
             "'none' = fixed 128x128 resize + regular GAP (benchmark); "
             "'no-batch' = batch size 1, no padding, gradient accumulation; "
             "'length-bucketing' = batch similar lengths + regular GAP; "
-            "'masked-gap' = batch padding with masked pooling"
+            "'masked-gap' = pad to fixed duration, batch together, masked GAP ignores padded silence"
         ),
     )
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument(
         "--accum-steps",
@@ -80,6 +82,15 @@ def parse_args() -> argparse.Namespace:
         "--run-name",
         default=None,
         help="TensorBoard run name (default: timestamp)",
+    )
+    parser.add_argument(
+        "--fixed-duration",
+        type=float,
+        default=DEFAULT_FIXED_DURATION_SEC,
+        help=(
+            "Pad/truncate to this duration for --batching-strategy none benchmark "
+            f"(default: {DEFAULT_FIXED_DURATION_SEC})"
+        ),
     )
     parser.add_argument(
         "--no-tensorboard",
@@ -242,11 +253,34 @@ def main() -> int:
         samples, val_ratio=args.val_ratio, test_ratio=args.test_ratio, seed=args.seed
     )
 
+    uses_fixed_duration = args.batching_strategy in {"none", "masked-gap"}
     resize_to = (128, 128) if args.batching_strategy == "none" else None
+    fixed_time_frames = (
+        duration_to_frames(args.fixed_duration) if uses_fixed_duration else None
+    )
+    return_valid_lengths = args.batching_strategy == "masked-gap"
 
-    train_dataset = SpectrogramDataset(train_samples, classes, resize_to=resize_to)
-    val_dataset = SpectrogramDataset(val_samples, classes, resize_to=resize_to)
-    test_dataset = SpectrogramDataset(test_samples, classes, resize_to=resize_to)
+    train_dataset = SpectrogramDataset(
+        train_samples,
+        classes,
+        resize_to=resize_to,
+        fixed_time_frames=fixed_time_frames,
+        return_valid_lengths=return_valid_lengths,
+    )
+    val_dataset = SpectrogramDataset(
+        val_samples,
+        classes,
+        resize_to=resize_to,
+        fixed_time_frames=fixed_time_frames,
+        return_valid_lengths=return_valid_lengths,
+    )
+    test_dataset = SpectrogramDataset(
+        test_samples,
+        classes,
+        resize_to=resize_to,
+        fixed_time_frames=fixed_time_frames,
+        return_valid_lengths=return_valid_lengths,
+    )
 
     train_loader = build_dataloader(
         train_dataset,
@@ -288,6 +322,10 @@ def main() -> int:
         )
 
     accum_steps = args.accum_steps if args.batching_strategy == "no-batch" else 1
+    if args.batching_strategy == "no-batch":
+        print(
+            f"Using gradient accumulation: {accum_steps} steps (effective batch size={accum_steps})"
+        )
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     best_val_f1 = -1.0
@@ -368,6 +406,7 @@ def main() -> int:
                 "val_accuracy": val_metrics["accuracy"],
                 "batching_strategy": args.batching_strategy,
                 "pooling_mode": pooling_mode,
+                "fixed_duration": args.fixed_duration,
             }
             torch.save(checkpoint, OUTPUT_DIR / "best.pt")
 

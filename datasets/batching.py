@@ -8,6 +8,7 @@ from torch.utils.data import BatchSampler, DataLoader
 from datasets.spectrogram import (
     SpectrogramDataset,
     collate_fixed,
+    collate_fixed_with_lengths,
     collate_no_pad,
     collate_padded,
 )
@@ -102,13 +103,16 @@ def build_dataloader(
             collate_fn=collate_padded,
         )
 
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=0,
-        collate_fn=collate_padded,
-    )
+    if batching_strategy == "masked-gap":
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=0,
+            collate_fn=collate_fixed_with_lengths,
+        )
+
+    raise ValueError(f"Unhandled batching strategy: {batching_strategy}")
 
 
 def uses_lengths(batching_strategy: str) -> bool:

@@ -2,6 +2,18 @@ import torch
 import torch.nn as nn
 
 POOLING_MODES = ("gap", "masked-gap")
+NUM_POOL_LAYERS = 4
+
+
+def time_frames_to_feature_widths(
+    time_frames: torch.Tensor,
+    num_pools: int = NUM_POOL_LAYERS,
+) -> torch.Tensor:
+    """Map input spectrogram widths to feature-map widths after repeated 2x max pooling."""
+    widths = time_frames.clone()
+    for _ in range(num_pools):
+        widths = widths // 2
+    return widths.clamp(min=1)
 
 
 def masked_global_avg_pool2d(x: torch.Tensor, valid_widths: torch.Tensor) -> torch.Tensor:
@@ -68,14 +80,10 @@ class BirdVGG(nn.Module):
         return self.fc(self.dropout(pooled))
 
     def _forward_masked(self, x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-        outputs = []
-        for i in range(x.size(0)):
-            sample = x[i : i + 1, :, :, : int(lengths[i])]
-            features = self.features(sample)
-            valid_width = torch.tensor([features.size(3)], device=x.device)
-            pooled = masked_global_avg_pool2d(features, valid_width)
-            outputs.append(self.fc(self.dropout(pooled)))
-        return torch.cat(outputs, dim=0)
+        features = self.features(x)
+        feature_widths = time_frames_to_feature_widths(lengths)
+        pooled = masked_global_avg_pool2d(features, feature_widths)
+        return self.fc(self.dropout(pooled))
 
     def forward(
         self,
