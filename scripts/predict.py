@@ -207,26 +207,22 @@ def predict_audio(
     torch_device = torch.device(device)
     checkpoint_data = torch.load(checkpoint, map_location=torch_device, weights_only=True)
     classes = checkpoint_data["classes"]
-    pooling_mode = checkpoint_data.get("pooling_mode", "gap")
-    batching_strategy = checkpoint_data.get("batching_strategy", "none")
+    batching_strategy = checkpoint_data.get("batching_strategy", "naive")
 
-    model = BirdVGG(num_classes=len(classes), pooling_mode=pooling_mode).to(torch_device)
+    model = BirdVGG(num_classes=len(classes)).to(torch_device)
     model.load_state_dict(checkpoint_data["model_state_dict"])
     model.eval()
 
-    resize_to = DEFAULT_IMAGE_SIZE if batching_strategy == "none" else None
-    input_tensor, lengths = preprocess_audio(audio_file, resize_to=resize_to)
+    resize_to = (
+        DEFAULT_IMAGE_SIZE
+        if batching_strategy in {"naive", "none"}
+        else None
+    )
+    input_tensor, _lengths = preprocess_audio(audio_file, resize_to=resize_to)
     input_tensor = input_tensor.to(torch_device)
-    if lengths is not None:
-        lengths = lengths.to(torch_device)
 
     with torch.no_grad():
-        if pooling_mode == "masked-gap":
-            if lengths is None:
-                lengths = torch.tensor([input_tensor.size(3)], device=torch_device)
-            logits = model(input_tensor, lengths)
-        else:
-            logits = model(input_tensor)
+        logits = model(input_tensor)
         probabilities = F.softmax(logits, dim=1).squeeze(0)
 
     return format_predictions(

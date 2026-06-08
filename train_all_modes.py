@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 CHECKPOINTS_DIR = ROOT / "checkpoints"
 EPOCHS = 150
-TRAIN_SCRIPT = ROOT / "scripts" / "train.py"
+TRAIN_SCRIPT = ROOT / "train.py"
 
 sys.path.insert(0, str(ROOT))
 

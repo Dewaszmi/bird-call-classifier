@@ -65,20 +65,6 @@ def collate_padded(
     return torch.stack(padded), torch.tensor(labels, dtype=torch.long), lengths
 
 
-def collate_no_pad(
-    batch: list[tuple[torch.Tensor, int]],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    if len(batch) != 1:
-        raise ValueError(f"collate_no_pad expects batch size 1, got {len(batch)}")
-
-    spec, label = batch[0]
-    return (
-        spec.unsqueeze(0),
-        torch.tensor([label], dtype=torch.long),
-        torch.tensor([spec.size(2)], dtype=torch.long),
-    )
-
-
 def discover_samples(root: Path) -> tuple[list[Sample], list[str]]:
     """Find all .npy spectrograms under root/<species>/ directories."""
     if not root.is_dir():

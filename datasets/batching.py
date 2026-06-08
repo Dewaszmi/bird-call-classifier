@@ -8,11 +8,10 @@ from torch.utils.data import BatchSampler, DataLoader
 from datasets.spectrogram import (
     SpectrogramDataset,
     collate_fixed,
-    collate_no_pad,
     collate_padded,
 )
 
-BATCHING_STRATEGIES = ("none", "no-batch", "length-bucketing", "masked-gap")
+BATCHING_STRATEGIES = ("naive", "length-bucketing")
 
 
 class LengthBucketBatchSampler(BatchSampler):
@@ -70,7 +69,7 @@ def build_dataloader(
             f"Choose from: {', '.join(BATCHING_STRATEGIES)}"
         )
 
-    if batching_strategy == "none":
+    if batching_strategy == "naive":
         return DataLoader(
             dataset,
             batch_size=batch_size,
@@ -79,41 +78,19 @@ def build_dataloader(
             collate_fn=collate_fixed,
         )
 
-    if batching_strategy == "no-batch":
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            shuffle=shuffle,
-            num_workers=0,
-            collate_fn=collate_no_pad,
-        )
-
-    if batching_strategy == "length-bucketing":
-        batch_sampler = LengthBucketBatchSampler(
-            dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            seed=seed,
-        )
-        return DataLoader(
-            dataset,
-            batch_sampler=batch_sampler,
-            num_workers=0,
-            collate_fn=collate_padded,
-        )
-
-    return DataLoader(
+    batch_sampler = LengthBucketBatchSampler(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        seed=seed,
+    )
+    return DataLoader(
+        dataset,
+        batch_sampler=batch_sampler,
         num_workers=0,
         collate_fn=collate_padded,
     )
 
 
 def uses_lengths(batching_strategy: str) -> bool:
-    return batching_strategy in {"no-batch", "length-bucketing", "masked-gap"}
-
-
-def uses_masked_pooling(batching_strategy: str) -> bool:
-    return batching_strategy == "masked-gap"
+    return batching_strategy == "length-bucketing"

@@ -77,10 +77,10 @@ The notebook will:
 - Clone this repo into `/kaggle/working/`
 - Symlink `/kaggle/input/.../processed_data` into the project
 - Install Python deps (PyTorch is already available on Kaggle)
-- Run `scripts/train.py --device cuda`
+- Run `train.py --device cuda`
 - Copy checkpoints to `/kaggle/working/outputs/` so they persist as notebook output
 
-### 3. Train all four batching strategies
+### 3. Train both batching strategies
 
 Locally:
 

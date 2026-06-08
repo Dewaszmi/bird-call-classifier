@@ -13,14 +13,13 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from datasets.batching import (
     BATCHING_STRATEGIES,
     build_dataloader,
     uses_lengths,
-    uses_masked_pooling,
 )
 from datasets.spectrogram import (
     SpectrogramDataset,
@@ -39,23 +38,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batching-strategy",
         choices=BATCHING_STRATEGIES,
-        default="none",
+        default="naive",
         help=(
             "Batching strategy: "
-            "'none' = fixed 128x128 resize + regular GAP (benchmark); "
-            "'no-batch' = batch size 1, no padding, gradient accumulation; "
-            "'length-bucketing' = batch similar lengths + regular GAP; "
-            "'masked-gap' = batch padding with masked pooling"
+            "'naive' = fixed 128x128 resize + regular GAP; "
+            "'length-bucketing' = batch similar lengths + regular GAP"
         ),
     )
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument(
-        "--accum-steps",
-        type=int,
-        default=32,
-        help="Gradient accumulation steps for --batching-strategy no-batch (default: 32)",
-    )
     parser.add_argument("--lr", type=float, default=1e-4, help="Initial learning rate")
     parser.add_argument(
         "--lr-end-factor",
@@ -95,10 +86,6 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def pooling_mode_for_strategy(batching_strategy: str) -> str:
-    return "masked-gap" if uses_masked_pooling(batching_strategy) else "gap"
-
-
 def macro_f1(preds: torch.Tensor, targets: torch.Tensor, num_classes: int) -> float:
     f1_scores: list[float] = []
     for class_idx in range(num_classes):
@@ -121,15 +108,7 @@ def macro_f1(preds: torch.Tensor, targets: torch.Tensor, num_classes: int) -> fl
     return sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
 
 
-def run_forward(
-    model: BirdVGG,
-    inputs: torch.Tensor,
-    lengths: torch.Tensor | None,
-) -> torch.Tensor:
-    if model.pooling_mode == "masked-gap":
-        if lengths is None:
-            raise ValueError("lengths are required for masked-gap pooling")
-        return model(inputs, lengths)
+def run_forward(model: BirdVGG, inputs: torch.Tensor) -> torch.Tensor:
     return model(inputs)
 
 
@@ -139,11 +118,11 @@ def iter_batches(
 ):
     for batch in loader:
         if uses_lengths(batching_strategy):
-            inputs, targets, lengths = batch
-            yield inputs, targets, lengths
+            inputs, targets, _lengths = batch
+            yield inputs, targets
         else:
             inputs, targets = batch
-            yield inputs, targets, None
+            yield inputs, targets
 
 
 @torch.no_grad()
@@ -162,13 +141,11 @@ def evaluate(
     all_preds: list[torch.Tensor] = []
     all_targets: list[torch.Tensor] = []
 
-    for inputs, targets, lengths in iter_batches(loader, batching_strategy):
+    for inputs, targets in iter_batches(loader, batching_strategy):
         inputs = inputs.to(device)
         targets = targets.to(device)
-        if lengths is not None:
-            lengths = lengths.to(device)
 
-        logits = run_forward(model, inputs, lengths)
+        logits = run_forward(model, inputs)
         loss = criterion(logits, targets)
         preds = logits.argmax(dim=1)
 
@@ -196,31 +173,24 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     batching_strategy: str,
-    accum_steps: int = 1,
 ) -> float:
     model.train()
     total_loss = 0.0
     total_samples = 0
 
     optimizer.zero_grad()
-    for step, (inputs, targets, lengths) in enumerate(
-        iter_batches(loader, batching_strategy), start=1
-    ):
+    for inputs, targets in iter_batches(loader, batching_strategy):
         inputs = inputs.to(device)
         targets = targets.to(device)
-        if lengths is not None:
-            lengths = lengths.to(device)
 
-        logits = run_forward(model, inputs, lengths)
-        loss = criterion(logits, targets) / accum_steps
+        logits = run_forward(model, inputs)
+        loss = criterion(logits, targets)
         loss.backward()
-
-        if step % accum_steps == 0 or step == len(loader):
-            optimizer.step()
-            optimizer.zero_grad()
+        optimizer.step()
+        optimizer.zero_grad()
 
         batch_size = targets.size(0)
-        total_loss += loss.item() * accum_steps * batch_size
+        total_loss += loss.item() * batch_size
         total_samples += batch_size
 
     return total_loss / total_samples
@@ -231,18 +201,12 @@ def main() -> int:
     set_seed(args.seed)
     device = torch.device(args.device)
 
-    if args.batching_strategy == "no-batch" and args.batch_size != 1:
-        print(
-            f"Note: --batching-strategy no-batch forces batch size 1 "
-            f"(effective batch size={args.accum_steps})."
-        )
-
     samples, classes = discover_samples(DATA_DIR)
     train_samples, val_samples, test_samples = train_val_test_split(
         samples, val_ratio=args.val_ratio, test_ratio=args.test_ratio, seed=args.seed
     )
 
-    resize_to = (128, 128) if args.batching_strategy == "none" else None
+    resize_to = (128, 128) if args.batching_strategy == "naive" else None
 
     train_dataset = SpectrogramDataset(train_samples, classes, resize_to=resize_to)
     val_dataset = SpectrogramDataset(val_samples, classes, resize_to=resize_to)
@@ -270,8 +234,7 @@ def main() -> int:
         seed=args.seed,
     )
 
-    pooling_mode = pooling_mode_for_strategy(args.batching_strategy)
-    model = BirdVGG(num_classes=len(classes), pooling_mode=pooling_mode).to(device)
+    model = BirdVGG(num_classes=len(classes)).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -287,8 +250,6 @@ def main() -> int:
             total_iters=args.epochs - 1,
         )
 
-    accum_steps = args.accum_steps if args.batching_strategy == "no-batch" else 1
-
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     best_val_f1 = -1.0
     history: list[dict[str, float]] = []
@@ -302,7 +263,7 @@ def main() -> int:
         writer = SummaryWriter(log_dir=log_path)
 
     print(f"Device: {device}")
-    print(f"Batching strategy: {args.batching_strategy} | Pooling: {pooling_mode}")
+    print(f"Batching strategy: {args.batching_strategy}")
     print(
         f"Classes: {len(classes)} | Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}"
     )
@@ -320,7 +281,6 @@ def main() -> int:
             optimizer,
             device,
             args.batching_strategy,
-            accum_steps=accum_steps,
         )
         val_metrics = evaluate(
             model,
@@ -367,7 +327,6 @@ def main() -> int:
                 "val_macro_f1": best_val_f1,
                 "val_accuracy": val_metrics["accuracy"],
                 "batching_strategy": args.batching_strategy,
-                "pooling_mode": pooling_mode,
             }
             torch.save(checkpoint, OUTPUT_DIR / "best.pt")
 
@@ -402,7 +361,6 @@ def main() -> int:
                 "lr_end_factor": args.lr_end_factor,
                 "batch_size": args.batch_size,
                 "batching_strategy": args.batching_strategy,
-                "accum_steps": accum_steps,
                 "epochs": args.epochs,
                 "weight_decay": args.weight_decay,
                 "val_ratio": args.val_ratio,
