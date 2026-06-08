@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import warnings
 from pathlib import Path
@@ -20,6 +21,8 @@ from datasets.spectrogram import DEFAULT_IMAGE_SIZE, preprocess_spectrogram
 from models.vgg import BirdVGG
 
 DEFAULT_CHECKPOINT = ROOT / "checkpoints" / "best.pt"
+DEFAULT_MIN_MARGIN = 0.15
+DEFAULT_MIN_TOP_PROBABILITY = 0.0
 
 
 class PredictionEntry(TypedDict):
@@ -27,10 +30,19 @@ class PredictionEntry(TypedDict):
     probability: float
 
 
+class ConfidenceMetrics(TypedDict):
+    top_probability: float
+    margin: float
+    entropy: float
+    normalized_entropy: float
+
+
 class PredictionResult(TypedDict):
     predictions: list[PredictionEntry]
     other: float
     best_match: str
+    identified: bool
+    confidence: ConfidenceMetrics
 
 
 def pad_audio(y: np.ndarray, target_length: int) -> np.ndarray:
@@ -104,10 +116,45 @@ def default_device() -> str:
     return "cpu"
 
 
+def assess_confidence(probabilities: torch.Tensor) -> ConfidenceMetrics:
+    sorted_probs, _ = torch.sort(probabilities, descending=True)
+    top_probability = sorted_probs[0].item()
+    second_probability = sorted_probs[1].item() if len(sorted_probs) > 1 else 0.0
+    margin = top_probability - second_probability
+
+    eps = 1e-12
+    entropy = -(probabilities * torch.log(probabilities + eps)).sum().item()
+    num_classes = len(probabilities)
+    max_entropy = math.log(num_classes) if num_classes > 1 else 1.0
+    normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0.0
+
+    return {
+        "top_probability": top_probability,
+        "margin": margin,
+        "entropy": entropy,
+        "normalized_entropy": normalized_entropy,
+    }
+
+
+def is_confident(
+    confidence: ConfidenceMetrics,
+    *,
+    min_margin: float,
+    min_top_probability: float,
+) -> bool:
+    return (
+        confidence["margin"] >= min_margin
+        and confidence["top_probability"] >= min_top_probability
+    )
+
+
 def format_predictions(
     probabilities: torch.Tensor,
     classes: list[str],
     top_k: int = 3,
+    *,
+    min_margin: float = DEFAULT_MIN_MARGIN,
+    min_top_probability: float = DEFAULT_MIN_TOP_PROBABILITY,
 ) -> PredictionResult:
     top_prob, top_indices = torch.topk(probabilities, k=min(top_k, len(classes)))
     top_index_set = set(top_indices.tolist())
@@ -127,10 +174,22 @@ def format_predictions(
         if i not in top_index_set
     )
 
+    confidence = assess_confidence(probabilities)
+    identified = is_confident(
+        confidence,
+        min_margin=min_margin,
+        min_top_probability=min_top_probability,
+    )
+    best_match = (
+        classes[top_indices[0].item()] if identified else "Unable to identify"
+    )
+
     return {
         "predictions": predictions,
         "other": other_prob,
-        "best_match": classes[top_indices[0].item()],
+        "best_match": best_match,
+        "identified": identified,
+        "confidence": confidence,
     }
 
 
@@ -138,6 +197,9 @@ def predict_audio(
     audio_file: Path,
     checkpoint: Path = DEFAULT_CHECKPOINT,
     device: str | None = None,
+    *,
+    min_margin: float = DEFAULT_MIN_MARGIN,
+    min_top_probability: float = DEFAULT_MIN_TOP_PROBABILITY,
 ) -> PredictionResult:
     if device is None:
         device = default_device()
@@ -167,17 +229,30 @@ def predict_audio(
             logits = model(input_tensor)
         probabilities = F.softmax(logits, dim=1).squeeze(0)
 
-    return format_predictions(probabilities, classes)
+    return format_predictions(
+        probabilities,
+        classes,
+        min_margin=min_margin,
+        min_top_probability=min_top_probability,
+    )
 
 
 def print_predictions(result: PredictionResult) -> None:
+    confidence = result["confidence"]
     print("\n--- Predictions ---")
     for index, entry in enumerate(result["predictions"], start=1):
         print(f"{index}. {entry['species']}: {entry['probability'] * 100:.2f}%")
     print(f"Other: {result['other'] * 100:.2f}%")
 
+    print("\n--- Confidence ---")
+    print(f"Top probability: {confidence['top_probability'] * 100:.2f}%")
+    print(f"Margin (1st - 2nd): {confidence['margin'] * 100:.2f}%")
+    print(f"Normalized entropy: {confidence['normalized_entropy']:.3f}")
+
     print("\n===========================================")
     print(f"Best Match: {result['best_match']}")
+    if not result["identified"]:
+        print("(Top class did not meet confidence thresholds)")
     print("===========================================\n")
 
 
@@ -199,6 +274,24 @@ def main() -> int:
         default=default_device(),
         help="Inference device",
     )
+    parser.add_argument(
+        "--min-margin",
+        type=float,
+        default=DEFAULT_MIN_MARGIN,
+        help=(
+            "Minimum gap between the top two class probabilities required to "
+            f"accept a prediction (default: {DEFAULT_MIN_MARGIN})"
+        ),
+    )
+    parser.add_argument(
+        "--min-probability",
+        type=float,
+        default=DEFAULT_MIN_TOP_PROBABILITY,
+        help=(
+            "Minimum top-class probability required to accept a prediction "
+            f"(default: {DEFAULT_MIN_TOP_PROBABILITY}, disabled)"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -218,7 +311,13 @@ def main() -> int:
 
     try:
         print("Running inference...")
-        result = predict_audio(args.audio_file, args.checkpoint, args.device)
+        result = predict_audio(
+            args.audio_file,
+            args.checkpoint,
+            args.device,
+            min_margin=args.min_margin,
+            min_top_probability=args.min_probability,
+        )
     except Exception as e:
         print(f"Error during prediction: {e}")
         return 1

@@ -11,7 +11,12 @@ from flask import Flask, jsonify, render_template, request
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from predict import DEFAULT_CHECKPOINT, predict_audio
+from predict import (
+    DEFAULT_CHECKPOINT,
+    DEFAULT_MIN_MARGIN,
+    DEFAULT_MIN_TOP_PROBABILITY,
+    predict_audio,
+)
 
 app = Flask(__name__)
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
@@ -59,6 +64,12 @@ def predict():
     return jsonify(
         {
             "best_match": result["best_match"],
+            "identified": result["identified"],
+            "confidence": result["confidence"],
+            "thresholds": {
+                "min_margin": DEFAULT_MIN_MARGIN,
+                "min_top_probability": DEFAULT_MIN_TOP_PROBABILITY,
+            },
             "predictions": result["predictions"],
             "other": result["other"],
             "chart": {

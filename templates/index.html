@@ -118,6 +118,53 @@
       font-weight: bold;
     }
 
+    .best-match.unidentified {
+      color: var(--error);
+    }
+
+    .confidence {
+      padding: 1rem 1.1rem;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(47, 107, 58, 0.05);
+    }
+
+    .confidence.unidentified {
+      background: rgba(180, 35, 24, 0.06);
+      border-color: rgba(180, 35, 24, 0.18);
+    }
+
+    .confidence h2 {
+      margin: 0 0 0.75rem;
+      font-size: 1rem;
+    }
+
+    .confidence dl {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 0.35rem 1rem;
+      margin: 0;
+    }
+
+    .confidence dt {
+      color: var(--muted);
+    }
+
+    .confidence dd {
+      margin: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .confidence-note {
+      margin: 0.85rem 0 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .confidence-note.error {
+      color: var(--error);
+    }
+
     .chart-wrap {
       position: relative;
       height: 320px;
@@ -147,6 +194,11 @@
 
     <section id="result" class="result">
       <div class="best-match" id="best-match"></div>
+      <section class="confidence" id="confidence-panel">
+        <h2>Confidence</h2>
+        <dl id="confidence-metrics"></dl>
+        <p class="confidence-note" id="confidence-note"></p>
+      </section>
       <div class="chart-wrap">
         <canvas id="prediction-chart"></canvas>
       </div>
@@ -161,6 +213,9 @@
     const statusEl = document.getElementById("status");
     const resultEl = document.getElementById("result");
     const bestMatchEl = document.getElementById("best-match");
+    const confidencePanelEl = document.getElementById("confidence-panel");
+    const confidenceMetricsEl = document.getElementById("confidence-metrics");
+    const confidenceNoteEl = document.getElementById("confidence-note");
     const predictionListEl = document.getElementById("prediction-list");
     const chartCanvas = document.getElementById("prediction-chart");
 
@@ -175,8 +230,57 @@
       return `${(value * 100).toFixed(2)}%`;
     }
 
+    function addMetric(label, value) {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const definition = document.createElement("dd");
+      definition.textContent = value;
+      confidenceMetricsEl.appendChild(term);
+      confidenceMetricsEl.appendChild(definition);
+    }
+
+    function renderConfidence(data) {
+      const { confidence, thresholds, identified } = data;
+      confidencePanelEl.classList.toggle("unidentified", !identified);
+      confidenceMetricsEl.innerHTML = "";
+
+      addMetric("Top probability", formatPercent(confidence.top_probability));
+      addMetric("Margin (1st − 2nd)", formatPercent(confidence.margin));
+      addMetric("Normalized entropy", confidence.normalized_entropy.toFixed(3));
+      addMetric("Required margin", formatPercent(thresholds.min_margin));
+
+      if (thresholds.min_top_probability > 0) {
+        addMetric("Required top probability", formatPercent(thresholds.min_top_probability));
+      }
+
+      if (identified) {
+        confidenceNoteEl.textContent = "The top prediction cleared the confidence thresholds.";
+        confidenceNoteEl.classList.remove("error");
+        return;
+      }
+
+      const reasons = [];
+      if (confidence.margin < thresholds.min_margin) {
+        reasons.push(
+          `margin ${formatPercent(confidence.margin)} is below the required ${formatPercent(thresholds.min_margin)}`
+        );
+      }
+      if (confidence.top_probability < thresholds.min_top_probability) {
+        reasons.push(
+          `top probability ${formatPercent(confidence.top_probability)} is below the required ${formatPercent(thresholds.min_top_probability)}`
+        );
+      }
+
+      confidenceNoteEl.textContent = reasons.length
+        ? `Unable to identify: ${reasons.join("; ")}.`
+        : "Unable to identify: confidence thresholds were not met.";
+      confidenceNoteEl.classList.add("error");
+    }
+
     function renderResult(data) {
       bestMatchEl.textContent = `Best match: ${data.best_match}`;
+      bestMatchEl.classList.toggle("unidentified", !data.identified);
+      renderConfidence(data);
       predictionListEl.innerHTML = "";
 
       for (const entry of data.predictions) {
