@@ -13,19 +13,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "bird-call-classifier"))
 
-from datasets.batching import (
-    BATCHING_STRATEGIES,
-    build_dataloader,
-    uses_lengths,
-)
-from datasets.spectrogram import (
-    SpectrogramDataset,
-    discover_samples,
-    train_val_test_split,
-)
+from datasets.batching import BATCHING_STRATEGIES, build_dataloader, uses_lengths
+from datasets.spectrogram import SpectrogramDataset, discover_samples, train_val_test_split
 from models.vgg import BirdVGG
 
 DATA_DIR = ROOT / "processed_data"
@@ -38,14 +30,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batching-strategy",
         choices=BATCHING_STRATEGIES,
-        default="naive",
+        default="length-bucketing",
         help=(
             "Batching strategy: "
             "'naive' = fixed 128x128 resize + regular GAP; "
             "'length-bucketing' = batch similar lengths + regular GAP"
         ),
     )
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-4, help="Initial learning rate")
     parser.add_argument(

@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "bird-call-classifier"))
 
 from datasets.spectrogram import DEFAULT_IMAGE_SIZE, preprocess_spectrogram
 from models.vgg import BirdVGG

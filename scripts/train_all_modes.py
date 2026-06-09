@@ -7,12 +7,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 CHECKPOINTS_DIR = ROOT / "checkpoints"
 EPOCHS = 150
-TRAIN_SCRIPT = ROOT / "train.py"
+TRAIN_SCRIPT = ROOT / "scripts" / "train.py"
 
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "bird-call-classifier"))
 
 from datasets.batching import BATCHING_STRATEGIES
 
@@ -29,7 +29,7 @@ def archive_run(strategy: str) -> None:
 def main() -> int:
     for index, strategy in enumerate(BATCHING_STRATEGIES, start=1):
         print(f"\n{'=' * 60}")
-        print(f"Run {index}/{len(BATCHING_STRATEGIES)}: {strategy} ({EPOCHS} epochs)")
+        print(f"Run {index}/{len(BATCHING_STRATEGIES)}: {strategy}")
         print("=" * 60)
 
         cmd = [
@@ -37,8 +37,6 @@ def main() -> int:
             str(TRAIN_SCRIPT),
             "--batching-strategy",
             strategy,
-            "--epochs",
-            str(EPOCHS),
             "--run-name",
             strategy,
         ]

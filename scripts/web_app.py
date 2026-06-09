@@ -8,7 +8,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from predict import (
@@ -18,7 +18,10 @@ from predict import (
     predict_audio,
 )
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    template_folder=str(ROOT / "bird-call-classifier" / "templates"),
+)
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 
 
