@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="pl">
+
+<head>
+    <meta charset="utf-8">
+    <title>Bird Call Classifier</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+    <!-- Reveal.js CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reset.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/theme/serif.min.css" id="theme">
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600&display=swap');
+
+        .reveal {
+            font-family: 'Crimson Pro', serif;
+            color: #333;
+        }
+
+        .reveal h1,
+        .reveal h2,
+        .reveal h3 {
+            font-family: 'Crimson Pro', serif;
+            text-transform: none;
+            color: #222;
+            font-weight: 600;
+        }
+
+        .reveal h2 {
+            font-size: 1.5em;
+            margin-bottom: 0.4em;
+            margin-top: -1.5em;
+        }
+
+        .reveal ul {
+            margin-left: 1em;
+            line-height: 1.3;
+            font-size: 0.85em;
+        }
+
+        .reveal li {
+            margin-bottom: 0.4em;
+        }
+
+        .highlight-text {
+            color: #b30000;
+            font-weight: 600;
+        }
+
+        .reveal img {
+            border: none;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            border-radius: 6px;
+            max-height: 600px;
+            object-fit: contain;
+        }
+
+        .container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .col {
+            flex: 1;
+        }
+
+        .col-img {
+            flex: 1.5;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="reveal">
+        <div class="slides">
+
+            <!-- Slajd 1 -->
+            <section>
+                <h3 style="color: #666; font-weight: 400;">Wprowadzenie do teorii sieci neuronowych</h3>
+                <h1 style="font-size: 2.5em; margin: 0.5em 0;">Klasyfikacja Gatunków Ptaków po Śpiewie</h1>
+                <br>
+                <p>Maciej Życzyński, Michał Oźminkowski</p>
+            </section>
+
+            <!-- Slajd 2 -->
+            <section>
+                <h2>Cel Badawczy</h2>
+                <ul>
+                    <li>Rozpoznawanie gatunków ptaków z próbki dźwiękowej.</li>
+                    <li>Odejście od klasycznych metod (MLP) na rzecz <b>Computer Vision</b>.</li>
+                    <li>Sygnał audio traktowany jako <span class="highlight-text">obraz jednokanałowy</span>.</li>
+                    <li>Baza danych: pobierana z API <i>xeno-canto.org</i>.</li>
+                </ul>
+            </section>
+
+            <!-- Slajd 3 -->
+            <section>
+                <h2>Reprezentacja Danych</h2>
+                <ul>
+                    <li><b>STFT</b> (Krótkoczasowa Transformacja Fouriera).</li>
+                    <li><b>Skala Melowa</b>: uwzględnia ludzką percepcję tonów.</li>
+                    <li><b>Log-Mel Spektrogram</b>: Skala decybelowa (logarytmiczna kompresja dynamiki).</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2>Przykładowy Spektrogram</h2>
+                <div style="text-align: center; margin-top: 1em;">
+                    <img src="spectrogram_plot.png" alt="Log-Mel Spektrogram"
+                        style="max-height: 70vh; max-width: 100%; object-fit: contain;">
+                </div>
+            </section>
+
+            <!-- Slajd 4 -->
+            <section>
+                <h2>Architektura: BirdVGG</h2>
+                <ul>
+                    <li>Wzorowana na sieciach <b>VGG</b>.</li>
+                    <li>Wykorzystuje filtry <b>3x3</b> do lokalnych wzorców czasowo-częstotliwościowych.</li>
+                    <li><b>Hierarchia Cech:</b> od prostych gwizdów po złożone trele.</li>
+                    <li>4 główne bloki konwolucyjne ze zwiększającą się liczbą kanałów.</li>
+                </ul>
+            </section>
+
+            <!-- Slajd 5 -->
+            <section>
+                <h2>Detale Sieci i Regularyzacja</h2>
+                <ul>
+                    <li><b>BatchNorm2d:</b> Szybsza zbieżność i stabilizacja gradientu.</li>
+                    <li><b>AdaptiveAvgPool2d(1):</b> Uodpornienie sieci na różną długość nagrań.</li>
+                    <li><b>Dropout (0.5):</b> Ochrona przed zjawiskiem przeuczenia (overfitting).</li>
+                    <li><b>Optymalizator:</b> AdamW.</li>
+                </ul>
+            </section>
+
+            <!-- Slajd 6 -->
+            <section>
+                <h2>Trening i Wyniki</h2>
+                <ul>
+                    <li><b>Length-Bucketing:</b> Inteligentny batching ograniczający zerowy padding.</li>
+                    <li>Trening z wykorzystaniem <b>Kaggle GPU (CUDA)</b>.</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2>Krzywa Uczenia</h2>
+                <div style="text-align: center; margin-top: 1em;">
+                    <img src="history_plot.png" alt="Krzywa uczenia"
+                        style="max-height: 70vh; max-width: 100%; object-fit: contain;">
+                </div>
+            </section>
+
+            <!-- Slajd 7 -->
+            <section>
+                <h2>Wdrożenie Aplikacji</h2>
+                <ul>
+                    <li><b>Inferencja CLI (predict.py):</b> Szybka klasyfikacja pliku z poziomu terminala.</li>
+                    <li><b>Aplikacja Webowa (Flask):</b> Graficzny interfejs, możliwość wgrania własnego nagrania z
+                        lasu.</li>
+                </ul>
+            </section>
+
+            <!-- Slajd 8 -->
+            <section>
+                <h2>Dziękuję za uwagę!</h2>
+            </section>
+
+        </div>
+    </div>
+
+    <!-- Reveal.js Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.js"></script>
+    <script>
+        Reveal.initialize({
+            hash: true,
+            slideNumber: 'c/t',
+            transition: 'slide'
+        });
+    </script>
+</body>
+
+</html>
