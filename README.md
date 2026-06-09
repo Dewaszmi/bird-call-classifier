@@ -68,10 +68,10 @@ Trained models can be evaluated on external audio, returning a probability distr
 python scripts/web_app.py
 ```
 
-which runs the GUI at `127.0.0.1:5000`, or directly via CLI, with `python scripts/predict.py [AUDIO_FILE]`
+which runs the GUI at `127.0.0.1:5000`, or directly via command line, with `python scripts/predict.py [path_to_audio_file]`
 
 The files are evaluated by default with the best available model (the one stored under `checkpoints/best.pt`).
 
 ## Additional info
 
-More detailed technical information is accessible at report.pdf. Project documentation and presentation materials are in `docs/`.
+More detailed technical information, including project documentation and presentation materials are accessible at `docs/`.
