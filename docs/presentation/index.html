@@ -89,12 +89,12 @@
 
             <!-- Slajd 2 -->
             <section>
-                <h2>Cel Badawczy</h2>
+                <h2>Cel Badawczy i Dane</h2>
                 <ul>
-                    <li>Rozpoznawanie gatunków ptaków z próbki dźwiękowej.</li>
+                    <li>Rozpoznawanie 18 gatunków ptaków polskiej fauny z próbek (do 30s).</li>
                     <li>Odejście od klasycznych metod (MLP) na rzecz <b>Computer Vision</b>.</li>
                     <li>Sygnał audio traktowany jako <span class="highlight-text">obraz jednokanałowy</span>.</li>
-                    <li>Baza danych: pobierana z API <i>xeno-canto.org</i>.</li>
+                    <li>Baza danych: 200 nagrań na gatunek z API <i>xeno-canto.org</i>.</li>
                 </ul>
             </section>
 
@@ -116,6 +116,24 @@
                 </div>
             </section>
 
+            <!-- Slajd o batchowaniu i problemach -->
+            <section>
+                <h2>Problem Zmiennej Długości</h2>
+                <ul>
+                    <li>Różna długość klipów generuje spektrogramy o <b>różnych wymiarach</b>.</li>
+                    <li>Uniemożliwia to ładowanie danych w jednym batchu.</li>
+                    <li><b>Odrzucono time-stretching:</b> niszczy spójność rozdzielczości osi czasu.</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2>Strategie Paddingu</h2>
+                <ul>
+                    <li><b>Naiwny padding:</b> Dopełnianie ciszą z prawej. W efekcie sieć błędnie skupiała się tylko na początkowych fragmentach spektrogramu.</li>
+                    <li><b>Length-Bucketing:</b> Inteligentne grupowanie w batchach nagrań o zbliżonej długości. Minimalizuje ilość dodawanej ciszy.</li>
+                </ul>
+            </section>
+
             <!-- Slajd 4 -->
             <section>
                 <h2>Architektura: BirdVGG</h2>
@@ -131,10 +149,10 @@
             <section>
                 <h2>Detale Sieci i Regularyzacja</h2>
                 <ul>
-                    <li><b>BatchNorm2d:</b> Szybsza zbieżność i stabilizacja gradientu.</li>
-                    <li><b>AdaptiveAvgPool2d(1):</b> Uodpornienie sieci na różną długość nagrań.</li>
-                    <li><b>Dropout (0.5):</b> Ochrona przed zjawiskiem przeuczenia (overfitting).</li>
-                    <li><b>Optymalizator:</b> AdamW.</li>
+                    <li><b>BatchNorm2d:</b> Szybsza zbieżność i stabilizacja gradientu pomiędzy warstwami.</li>
+                    <li><b>Global Average Pooling:</b> Uodpornienie sieci na różną wielkość wejścia i potężna redukcja liczby parametrów względem warstw gęstych.</li>
+                    <li><b>Dropout (0.5) i Weight Decay (1e-4):</b> Silna regularyzacja i ochrona przed overfittingiem.</li>
+                    <li><b>Optymalizator:</b> AdamW, z liniowym spadkiem współczynnika uczenia.</li>
                 </ul>
             </section>
 
@@ -142,8 +160,8 @@
             <section>
                 <h2>Trening i Wyniki</h2>
                 <ul>
-                    <li><b>Length-Bucketing:</b> Inteligentny batching ograniczający zerowy padding.</li>
-                    <li>Trening z wykorzystaniem <b>Kaggle GPU (CUDA)</b>.</li>
+                    <li>Trening (75 epok, 70/15/15) z użyciem Nvidia GTX 1070.</li>
+                    <li><b>Length-Bucketing</b> zapewnia odczuwalnie lepsze wyniki kosztem czasu (54 min vs 7 min dla naiwnego).</li>
                 </ul>
             </section>
 
@@ -159,9 +177,9 @@
             <section>
                 <h2>Wdrożenie Aplikacji</h2>
                 <ul>
-                    <li><b>Inferencja CLI (predict.py):</b> Szybka klasyfikacja pliku z poziomu terminala.</li>
-                    <li><b>Aplikacja Webowa (Flask):</b> Graficzny interfejs, możliwość wgrania własnego nagrania z
-                        lasu.</li>
+                    <li><b>Aplikacja Webowa (Flask) i CLI:</b> Możliwość wgrania i analizy własnego nagrania z lasu.</li>
+                    <li><b>Ocena pewności predykcji:</b> Oprócz Entropii Shannona, obliczany jest przede wszystkim <b>margines</b> pomiędzy dwoma najbardziej prawdopodobnymi klasami.</li>
+                    <li>Założenia udanej predykcji: Prawdopodobieństwo lidera > 30% i margines > 15%.</li>
                 </ul>
             </section>
 
