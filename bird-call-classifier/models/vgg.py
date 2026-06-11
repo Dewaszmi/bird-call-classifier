@@ -27,8 +27,6 @@ class VGGBlock(nn.Module):
 
 
 class BirdVGG(nn.Module):
-    """Small VGG-style CNN for log-mel spectrogram classification."""
-
     def __init__(self, num_classes: int, in_channels: int = 1):
         super().__init__()
         self.features = nn.Sequential(

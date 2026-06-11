@@ -109,10 +109,13 @@
             </section>
 
             <section>
-                <h2>Przykładowy Spektrogram</h2>
+                <h2>Przykład Reprezentacji</h2>
                 <div style="text-align: center; margin-top: 1em;">
-                    <img src="spectrogram_plot.png" alt="Log-Mel Spektrogram"
-                        style="max-height: 70vh; max-width: 100%; object-fit: contain;">
+                    <img src="spectrogram_sample.png" alt="Log-Mel Spektrogram"
+                        style="max-height: 55vh; max-width: 100%; object-fit: contain;">
+                    <p style="font-size: 0.55em; color: #666; margin-top: 0.8em; margin-bottom: 0;">
+                        Oś pionowa: pasma melowe. Oś pozioma: kolejne ramki czasowe.
+                    </p>
                 </div>
             </section>
 
@@ -132,6 +135,14 @@
                     <li><b>Naiwny padding:</b> Dopełnianie ciszą z prawej. W efekcie sieć błędnie skupiała się tylko na początkowych fragmentach spektrogramu.</li>
                     <li><b>Length-Bucketing:</b> Inteligentne grupowanie w batchach nagrań o zbliżonej długości. Minimalizuje ilość dodawanej ciszy.</li>
                 </ul>
+            </section>
+
+            <section>
+                <h2>Przykładowy Spektrogram</h2>
+                <div style="text-align: center; margin-top: 1em;">
+                    <img src="spectrogram_plot.png" alt="Log-Mel Spektrogram"
+                        style="max-height: 70vh; max-width: 100%; object-fit: contain;">
+                </div>
             </section>
 
             <!-- Slajd 4 -->
